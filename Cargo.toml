@@ -1,0 +1,14 @@
+[package]
+name = "rod"
+version = "0.1.0"
+authors = ["Michael Jungo <michaeljungo92@gmail.com>"]
+description = "Command line tool for searching the Rust documentation"
+license = "MIT"
+
+[dependencies]
+clap = "2.9.3"
+clippy = { version = "0.0.79", optional = true }
+
+[features]
+default = []
+lint = ["clippy"]
