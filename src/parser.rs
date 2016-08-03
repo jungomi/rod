@@ -20,6 +20,50 @@ pub enum Bound {
     Lifetime(Generic),
 }
 
+/// A variant of the fields of a structure or an enum.
+#[derive(Clone, Debug)]
+pub enum FieldVariant {
+    /// A single unit.
+    ///
+    /// e.g. `struct Unit;` or `A` and `B` in `enum Enum { A, B, }`
+    Unit,
+    /// The fields of a tuple.
+    ///
+    /// e.g. `u32` and `String` in`(u32, String)`
+    Tuple(Option<Vec<String>>),
+    /// The fields of a structure.
+    ///
+    /// e.g. `one: u32` and `two: String` in `struct Struct { one: u32, two: String }`
+    Struct(Option<Vec<Doc<Variable>>>),
+}
+
+impl fmt::Display for FieldVariant {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            FieldVariant::Unit => write!(f, ""),
+            FieldVariant::Tuple(ref tuple) => {
+                write!(f,
+                       "({})",
+                       tuple.as_ref().map_or("".to_string(), |v| v.join(", ")))
+            }
+            FieldVariant::Struct(ref opt) => {
+                match *opt {
+                    Some(ref fields) if !fields.is_empty() => {
+                        let fields = fields.iter()
+                            .map(|field| {
+                                format!("    {},", field.to_string().replace("\n", "\n    "))
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        write!(f, " {{\n{}\n}}", fields)
+                    }
+                    _ => write!(f, " {{}}"),
+                }
+            }
+        }
+    }
+}
+
 /// A documentation entry.
 #[derive(Clone, Debug)]
 pub struct Doc<T> {
@@ -50,7 +94,7 @@ pub struct Struct {
     /// The identifier of the struct.
     pub ident: String,
     /// The public fields of the struct.
-    pub fields: Option<Vec<Doc<Variable>>>,
+    pub fields: FieldVariant,
     /// The generic types of the struct.
     pub generics: Option<Vec<Generic>>,
     /// The generic lifetimes of the struct.
@@ -214,25 +258,16 @@ impl Default for FileDoc {
 impl fmt::Display for Struct {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let generics = generic_string(&self.generics, &self.lifetimes);
-        match self.fields {
-            Some(ref fields) if !fields.is_empty() => {
-                let fields = fields.iter()
-                    .map(|field| format!("    {},", field.to_string().replace("\n", "\n    ")))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                write!(f,
-                       "pub struct {ident}{generics} {{\n{fields}\n}}",
-                       ident = self.ident,
-                       generics = generics,
-                       fields = fields)
-            }
-            _ => {
-                write!(f,
-                       "pub struct {ident}{generics} {{}}",
-                       ident = self.ident,
-                       generics = generics)
-            }
-        }
+        let semicolon = match self.fields {
+            FieldVariant::Struct(_) => "".to_string(),
+            _ => ";".to_string(),
+        };
+        write!(f,
+               "pub struct {ident}{generics}{fields}{semicolon}",
+               ident = self.ident,
+               generics = generics,
+               fields = self.fields,
+               semicolon = semicolon)
     }
 }
 
@@ -399,7 +434,7 @@ impl<'a> DocVisitor<'a> {
                 self.docs.functions.push(Doc::new(doc, function));
             }
             ItemKind::Struct(ref data, ref generics) => {
-                let fields = try!(convert_fields(data.fields(), self.codemap));
+                let fields = try!(convert_variantdata(data, self.codemap));
                 let gens = try!(convert_generics(&generics.ty_params, self.codemap));
                 let lifetimes = convert_lifetimes(&generics.lifetimes);
                 let st = Struct {
@@ -418,7 +453,7 @@ impl<'a> DocVisitor<'a> {
 
 impl<'a> Visitor for DocVisitor<'a> {
     fn visit_item(&mut self, item: &ast::Item) {
-        if let ast::Visibility::Public = item.vis {
+        if ast::Visibility::Public == item.vis {
             let ident = item.ident.to_string();
             let doc_string = match convert_doc_string(&item.attrs, self.codemap) {
                 Ok(doc) => doc,
@@ -463,27 +498,50 @@ fn convert_doc_string(attrs: &[ast::Attribute], codemap: &CodeMap) -> Result<Str
     Ok(res.join("\n"))
 }
 
-fn convert_fields(fields: &[ast::StructField],
-                  codemap: &CodeMap)
-                  -> Result<Option<Vec<Doc<Variable>>>, Error> {
-    if fields.is_empty() {
-        return Ok(None);
-    }
-    fields.iter()
-        .map(|field| {
-            if field.vis != ast::Visibility::Public {
-                return Ok(None);
+fn convert_variantdata(data: &ast::VariantData, codemap: &CodeMap) -> Result<FieldVariant, Error> {
+    match *data {
+        ast::VariantData::Unit(_) => Ok(FieldVariant::Unit),
+        ast::VariantData::Tuple(ref fields, _) => {
+            if fields.is_empty() {
+                Ok(FieldVariant::Tuple(None))
+            } else {
+                let members: Vec<_> = try!(fields.iter()
+                    .map(|field| {
+                        if field.vis != ast::Visibility::Public {
+                            return Ok(None);
+                        }
+                        let snippet = try!(codemap.span_to_snippet(field.ty.span));
+                        Ok(Some(snippet))
+                    })
+                    .collect::<Result<_, Error>>());
+                let members = option_from_vec(members);
+                Ok(FieldVariant::Tuple(members))
             }
-            let ident = match field.ident {
-                Some(ident) => ident.to_string(),
-                None => return Ok(None),
-            };
-            let ty = try!(codemap.span_to_snippet(field.ty.span));
-            let doc_string = try!(convert_doc_string(&field.attrs, codemap));
-            let var = Variable::new(ident, ty);
-            Ok(Some(Doc::new(doc_string, var)))
-        })
-        .collect()
+        }
+        ast::VariantData::Struct(ref fields, _) => {
+            if fields.is_empty() {
+                Ok(FieldVariant::Struct(None))
+            } else {
+                let members: Vec<_> = try!(fields.iter()
+                    .map(|field| {
+                        if field.vis != ast::Visibility::Public {
+                            return Ok(None);
+                        }
+                        let ident = match field.ident {
+                            Some(ident) => ident.to_string(),
+                            None => return Ok(None),
+                        };
+                        let ty = try!(codemap.span_to_snippet(field.ty.span));
+                        let doc_string = try!(convert_doc_string(&field.attrs, codemap));
+                        let var = Variable::new(ident, ty);
+                        Ok(Some(Doc::new(doc_string, var)))
+                    })
+                    .collect::<Result<_, Error>>());
+                let members = option_from_vec(members);
+                Ok(FieldVariant::Struct(members))
+            }
+        }
+    }
 }
 
 fn convert_generics(types: &[ast::TyParam],
@@ -580,4 +638,14 @@ fn join_generics_and_lifetimes(generics: &[Generic], lifetimes: &[Generic]) -> S
     let mut clauses: Vec<_> = lifetimes.iter().map(|life| life.to_string()).collect();
     clauses.append(&mut gens);
     clauses.join(", ")
+}
+
+fn option_from_vec<T>(vec: Vec<Option<T>>) -> Option<Vec<T>> {
+    let filtered: Option<Vec<_>> = vec.into_iter().filter(|field| field.is_some()).collect();
+    match filtered {
+        Some(ref vec) if vec.is_empty() => return None,
+        None => return None,
+        _ => (),
+    }
+    filtered
 }
