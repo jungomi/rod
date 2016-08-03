@@ -5,9 +5,16 @@ authors = ["Michael Jungo <michaeljungo92@gmail.com>"]
 description = "Command line tool for searching the Rust documentation"
 license = "MIT"
 
+[[bin]]
+name = "rod"
+doc = false
+
 [dependencies]
-clap = "2.9.3"
-clippy = { version = "0.0.79", optional = true }
+clap = "2.10.0"
+syntex_syntax = "0.39.0"
+syntex_pos = "0.39.0"
+walkdir = "0.1.5"
+clippy = { version = "0.0.80", optional = true }
 
 [features]
 default = []
