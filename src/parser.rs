@@ -37,7 +37,24 @@ pub struct Doc<T> {
 pub struct FileDoc {
     /// The function documentations.
     pub functions: Vec<Doc<FnDecl>>,
+    /// The struct documentations.
+    pub structs: Vec<Doc<Struct>>,
     path: PathBuf,
+}
+
+/// A public struct declaration.
+///
+/// Only public fields are included becuase private fields are not exposed to the documentation.
+#[derive(Clone, Debug)]
+pub struct Struct {
+    /// The identifier of the struct.
+    pub ident: String,
+    /// The public fields of the struct.
+    pub fields: Option<Vec<Doc<Variable>>>,
+    /// The generic types of the struct.
+    pub generics: Option<Vec<Generic>>,
+    /// The generic lifetimes of the struct.
+    pub lifetimes: Option<Vec<Generic>>,
 }
 
 /// A public function declaration.
@@ -152,6 +169,7 @@ impl FileDoc {
     pub fn new() -> FileDoc {
         FileDoc {
             functions: Vec::new(),
+            structs: Vec::new(),
             path: PathBuf::new(),
         }
     }
@@ -160,6 +178,7 @@ impl FileDoc {
     pub fn with_path(path: &Path) -> FileDoc {
         FileDoc {
             functions: Vec::new(),
+            structs: Vec::new(),
             path: path.to_path_buf(),
         }
     }
@@ -189,6 +208,31 @@ impl FileDoc {
 impl Default for FileDoc {
     fn default() -> FileDoc {
         FileDoc::new()
+    }
+}
+
+impl fmt::Display for Struct {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let generics = generic_string(&self.generics, &self.lifetimes);
+        match self.fields {
+            Some(ref fields) if !fields.is_empty() => {
+                let fields = fields.iter()
+                    .map(|field| format!("    {},", field.to_string().replace("\n", "\n    ")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                write!(f,
+                       "pub struct {ident}{generics} {{\n{fields}\n}}",
+                       ident = self.ident,
+                       generics = generics,
+                       fields = fields)
+            }
+            _ => {
+                write!(f,
+                       "pub struct {ident}{generics} {{}}",
+                       ident = self.ident,
+                       generics = generics)
+            }
+        }
     }
 }
 
@@ -354,6 +398,18 @@ impl<'a> DocVisitor<'a> {
                 };
                 self.docs.functions.push(Doc::new(doc, function));
             }
+            ItemKind::Struct(ref data, ref generics) => {
+                let fields = try!(convert_fields(data.fields(), self.codemap));
+                let gens = try!(convert_generics(&generics.ty_params, self.codemap));
+                let lifetimes = convert_lifetimes(&generics.lifetimes);
+                let st = Struct {
+                    ident: ident,
+                    fields: fields,
+                    generics: gens,
+                    lifetimes: lifetimes,
+                };
+                self.docs.structs.push(Doc::new(doc, st));
+            }
             _ => println!("Not supported"),
         }
         Ok(())
@@ -364,23 +420,10 @@ impl<'a> Visitor for DocVisitor<'a> {
     fn visit_item(&mut self, item: &ast::Item) {
         if let ast::Visibility::Public = item.vis {
             let ident = item.ident.to_string();
-            let doc_string = item.attrs
-                .iter()
-                .filter_map(|attr| {
-                    if attr.node.is_sugared_doc {
-                        match self.codemap.span_to_snippet(attr.span) {
-                            Ok(string) => {
-                                let trim_chars: &[_] = &['/', '!'];
-                                Some(string.trim_left_matches(trim_chars).trim().to_string())
-                            },
-                            Err(_) => None,
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let doc_string = match convert_doc_string(&item.attrs, self.codemap) {
+                Ok(doc) => doc,
+                Err(_) => return,
+            };
             if let Err(_) = self.add_item(ident, doc_string, &item.node) {
                 return;
             }
@@ -396,14 +439,51 @@ fn convert_args(args: &[ast::Arg], codemap: &CodeMap) -> Result<Option<Vec<Varia
     if args.is_empty() {
         return Ok(None);
     }
-    let args = try!(args.iter()
+    args.iter()
         .map(|arg| {
             let ty = try!(codemap.span_to_snippet(arg.ty.span));
             let pat = try!(codemap.span_to_snippet(arg.pat.span));
-            Ok(Variable::new(pat, ty))
+            Ok(Some(Variable::new(pat, ty)))
+        })
+        .collect()
+}
+
+fn convert_doc_string(attrs: &[ast::Attribute], codemap: &CodeMap) -> Result<String, Error> {
+    if attrs.is_empty() {
+        return Ok("".to_string());
+    }
+    let res: Vec<_> = try!(attrs.iter()
+        .filter(|attr| attr.node.is_sugared_doc)
+        .map(|attr| {
+            let snippet = try!(codemap.span_to_snippet(attr.span));
+            let trim_chars: &[_] = &['/', '!'];
+            Ok(snippet.trim_left_matches(trim_chars).trim().to_string())
         })
         .collect::<Result<_, Error>>());
-    Ok(Some(args))
+    Ok(res.join("\n"))
+}
+
+fn convert_fields(fields: &[ast::StructField],
+                  codemap: &CodeMap)
+                  -> Result<Option<Vec<Doc<Variable>>>, Error> {
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    fields.iter()
+        .map(|field| {
+            if field.vis != ast::Visibility::Public {
+                return Ok(None);
+            }
+            let ident = match field.ident {
+                Some(ident) => ident.to_string(),
+                None => return Ok(None),
+            };
+            let ty = try!(codemap.span_to_snippet(field.ty.span));
+            let doc_string = try!(convert_doc_string(&field.attrs, codemap));
+            let var = Variable::new(ident, ty);
+            Ok(Some(Doc::new(doc_string, var)))
+        })
+        .collect()
 }
 
 fn convert_generics(types: &[ast::TyParam],
@@ -412,7 +492,7 @@ fn convert_generics(types: &[ast::TyParam],
     if types.is_empty() {
         return Ok(None);
     }
-    let gens: Vec<_> = try!(types.iter()
+    types.iter()
         .map(|ty| {
             let ident = ty.ident.to_string();
             let bounds = try!(convert_param_bounds(&ty.bounds, codemap));
@@ -420,20 +500,18 @@ fn convert_generics(types: &[ast::TyParam],
                 ident: ident,
                 bounds: bounds,
             };
-            Ok(generic)
+            Ok(Some(generic))
         })
-        .collect::<Result<_, Error>>());
-    Ok(Some(gens))
+        .collect()
 }
 
 fn convert_lifetimes(lifetimes: &[ast::LifetimeDef]) -> Option<Vec<Generic>> {
     if lifetimes.is_empty() {
         return None;
     }
-    let lifetimes: Vec<_> = lifetimes.iter()
-        .map(|life| Generic::from_ast_lifetime(&life.lifetime, &life.bounds))
-        .collect();
-    Some(lifetimes)
+    lifetimes.iter()
+        .map(|life| Some(Generic::from_ast_lifetime(&life.lifetime, &life.bounds)))
+        .collect()
 }
 
 fn convert_param_bounds(bounds: &[ast::TyParamBound],
@@ -476,7 +554,8 @@ fn convert_where_predicates(predicates: &[ast::WherePredicate],
                     Ok(Bound::Type(generic))
                 }
                 ast::WherePredicate::RegionPredicate(ref region_pred) => {
-                    let lifetime = Generic::from_ast_lifetime(&region_pred.lifetime, &region_pred.bounds);
+                    let lifetime = Generic::from_ast_lifetime(&region_pred.lifetime,
+                                                              &region_pred.bounds);
                     Ok(Bound::Lifetime(lifetime))
                 }
                 ast::WherePredicate::EqPredicate(_) => Err(Error::Unsupported),
@@ -484,6 +563,16 @@ fn convert_where_predicates(predicates: &[ast::WherePredicate],
         })
         .collect::<Result<_, Error>>());
     Ok(Some(WhereClause::from(where_bounds)))
+}
+
+fn generic_string(generics: &Option<Vec<Generic>>, lifetimes: &Option<Vec<Generic>>) -> String {
+    if generics.is_none() && lifetimes.is_none() {
+        "".to_string()
+    } else {
+        format!("<{}>",
+                join_generics_and_lifetimes(&generics.as_ref().unwrap_or(&Vec::new()),
+                                            &lifetimes.as_ref().unwrap_or(&Vec::new())))
+    }
 }
 
 fn join_generics_and_lifetimes(generics: &[Generic], lifetimes: &[Generic]) -> String {

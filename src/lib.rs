@@ -83,6 +83,9 @@ pub fn generate_index(pattern: &str) {
         for func in doc.functions {
             println!("{}", func);
         }
+        for st in doc.structs {
+            println!("{}", st);
+        }
     }
 }
 
