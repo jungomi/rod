@@ -85,16 +85,27 @@ impl From<bool> for DefaultVisibility {
 #[derive(Clone, Debug)]
 pub struct Doc<T> {
     /// The documentation comments.
-    pub doc_string: String,
+    pub doc_string: Option<String>,
     /// The item being described.
     pub item: T,
 }
 
 impl<T> Doc<T> {
-    /// Creates a new `Doc` with the `doc_string` describing the `item`.
-    pub fn new(doc_string: String, item: T) -> Doc<T> {
+    /// Creates a new `Doc` without doc comments.
+    pub fn new(item: T) -> Doc<T> {
         Doc {
-            doc_string: doc_string,
+            doc_string: None,
+            item: item,
+        }
+    }
+
+    /// Creates a new `Doc` with the `doc_string` describing the `item`.
+    pub fn with_docs(item: T, doc_string: String) -> Doc<T> {
+        if doc_string.is_empty() {
+            return Doc::new(item);
+        }
+        Doc {
+            doc_string: Some(doc_string),
             item: item,
         }
     }
@@ -104,8 +115,10 @@ impl<T> fmt::Display for Doc<T>
     where T: fmt::Display
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for line in self.doc_string.lines() {
-            try!(writeln!(f, "/// {}", line));
+        if let Some(ref doc_string) = self.doc_string {
+            for line in doc_string.lines() {
+                try!(writeln!(f, "/// {}", line));
+            }
         }
         write!(f, "{}", self.item)
     }
@@ -477,7 +490,7 @@ impl<'a> DocVisitor<'a> {
                             ident: ident,
                             body: body,
                         };
-                        Ok(Doc::new(doc_string, enum_field))
+                        Ok(Doc::with_docs(enum_field, doc_string))
                     })
                     .collect::<Result<_, Error>>());
                 let lifetimes = convert_lifetimes(&generics.lifetimes);
@@ -491,7 +504,7 @@ impl<'a> DocVisitor<'a> {
                     lifetimes: lifetimes,
                     where_clause: where_clause,
                 };
-                self.docs.enums.push(Doc::new(doc, enum_def));
+                self.docs.enums.push(Doc::with_docs(enum_def, doc));
             }
             ItemKind::Fn(ref fn_decl, ref unsafety, _, ref abi, ref generics, _) => {
                 let args = try!(convert_args(&fn_decl.inputs, self.codemap));
@@ -528,7 +541,7 @@ impl<'a> DocVisitor<'a> {
                     unsafety: unsafety,
                     ext: ext,
                 };
-                self.docs.functions.push(Doc::new(doc, function));
+                self.docs.functions.push(Doc::with_docs(function, doc));
             }
             ItemKind::Struct(ref data, ref generics) => {
                 let fields =
@@ -541,7 +554,7 @@ impl<'a> DocVisitor<'a> {
                     generics: gens,
                     lifetimes: lifetimes,
                 };
-                self.docs.structs.push(Doc::new(doc, st));
+                self.docs.structs.push(Doc::with_docs(st, doc));
             }
             _ => println!("Not supported"),
         }
@@ -635,7 +648,7 @@ fn convert_variantdata(data: &ast::VariantData,
                         let ty = try!(codemap.span_to_snippet(field.ty.span));
                         let doc_string = try!(convert_doc_string(&field.attrs, codemap));
                         let var = Variable::new(ident, ty);
-                        Ok(Some(Doc::new(doc_string, var)))
+                        Ok(Some(Doc::with_docs(var, doc_string)))
                     })
                     .collect::<Result<_, Error>>());
                 let members = option_from_vec(members);
