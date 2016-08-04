@@ -380,7 +380,68 @@ impl fmt::Display for Generic {
 
 /// A public struct declaration.
 ///
-/// Only public fields are included becuase private fields are not exposed to the documentation.
+/// Only public fields are included because private fields are not exposed to the documentation.
+///
+/// # Examples
+///
+/// For the documentation only public fields are relevant and therefore private members are
+/// omitted from the examples.
+/// The following examples show the minimal representation of the three available forms:
+///
+/// > **Note:** Keep in mind that struct members are by default private and thus require the `pub`
+/// keyword.
+///
+/// ## Unit
+///
+/// ```rust
+/// # use rod::parser::{FieldVariant, Struct};
+/// pub struct Unit;
+///
+/// Struct {
+///     ident: "Unit".to_string(),
+///     fields: FieldVariant::Unit,
+///     generics: None,
+///     lifetimes: None,
+/// };
+/// ```
+///
+/// ## Tuple
+///
+/// A tuple contains all types of the respective values.
+///
+/// ```rust
+/// # use rod::parser::{FieldVariant, Struct};
+/// pub struct Point(pub i32, pub i32);
+///
+/// Struct {
+///     ident: "Point".to_string(),
+///     fields: FieldVariant::Tuple(Some(vec!["i32".to_string(), "i32".to_string()])),
+///     generics: None,
+///     lifetimes: None,
+/// };
+/// ```
+///
+/// ## Classic struct
+///
+/// A classic struct has named members which use the same declaration as a variable with explicit
+/// type annotation. For this reason a member uses the `Variable` representation.
+///
+/// ```rust
+/// # use rod::parser::{Doc, FieldVariant, Struct, Variable};
+/// pub struct Classic {
+///     pub x: i32,
+///     pub y: i32,
+/// }
+///
+/// let x = Variable::new("x".to_string(), "i32".to_string());
+/// let y = Variable::new("y".to_string(), "i32".to_string());
+/// Struct {
+///     ident: "Classic".to_string(),
+///     fields: FieldVariant::Struct(Some(vec![Doc::new(x), Doc::new(y)])),
+///     generics: None,
+///     lifetimes: None,
+/// };
+/// ```
 #[derive(Clone, Debug)]
 pub struct Struct {
     /// The identifier of the struct.
