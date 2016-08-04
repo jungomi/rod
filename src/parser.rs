@@ -90,6 +90,27 @@ pub struct Doc<T> {
     pub item: T,
 }
 
+impl<T> Doc<T> {
+    /// Creates a new `Doc` with the `doc_string` describing the `item`.
+    pub fn new(doc_string: String, item: T) -> Doc<T> {
+        Doc {
+            doc_string: doc_string,
+            item: item,
+        }
+    }
+}
+
+impl<T> fmt::Display for Doc<T>
+    where T: fmt::Display
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for line in self.doc_string.lines() {
+            try!(writeln!(f, "/// {}", line));
+        }
+        write!(f, "{}", self.item)
+    }
+}
+
 /// The documentation entries of a file.
 ///
 /// Holds the documentation entries of a file. The entries are listed under the corresponding item
@@ -103,6 +124,55 @@ pub struct FileDoc {
     /// The struct documentations.
     pub structs: Vec<Doc<Struct>>,
     path: PathBuf,
+}
+
+impl FileDoc {
+    /// Creates a new empty `FileDoc`.
+    pub fn new() -> FileDoc {
+        FileDoc {
+            enums: Vec::new(),
+            functions: Vec::new(),
+            structs: Vec::new(),
+            path: PathBuf::new(),
+        }
+    }
+
+    /// Creates a new `FileDoc` with the given `Path`.
+    pub fn with_path(path: &Path) -> FileDoc {
+        FileDoc {
+            enums: Vec::new(),
+            functions: Vec::new(),
+            structs: Vec::new(),
+            path: path.to_path_buf(),
+        }
+    }
+
+    /// Returns the `Path` of the file.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Extracts documentation from the [`path()`].
+    ///
+    /// [`path()`]: #method.path
+    pub fn extract_from_file(&mut self) {
+        let session = parse::ParseSess::new();
+        let krate = match parse::parse_crate_from_file(self.path(), Vec::new(), &session) {
+            Ok(krate) => krate,
+            Err(_) => return,
+        };
+        let mut visitor = DocVisitor {
+            docs: self,
+            codemap: session.codemap(),
+        };
+        visit::walk_crate(&mut visitor, &krate);
+    }
+}
+
+impl Default for FileDoc {
+    fn default() -> FileDoc {
+        FileDoc::new()
+    }
 }
 
 /// A public enum declaration.
@@ -157,21 +227,6 @@ impl fmt::Display for EnumField {
     }
 }
 
-/// A public struct declaration.
-///
-/// Only public fields are included becuase private fields are not exposed to the documentation.
-#[derive(Clone, Debug)]
-pub struct Struct {
-    /// The identifier of the struct.
-    pub ident: String,
-    /// The public fields of the struct.
-    pub fields: FieldVariant,
-    /// The generic types of the struct.
-    pub generics: Option<Vec<Generic>>,
-    /// The generic lifetimes of the struct.
-    pub lifetimes: Option<Vec<Generic>>,
-}
-
 /// A public function declaration.
 ///
 /// The minimal function declaration simply has an identifier, all the other parts are optional
@@ -220,130 +275,6 @@ pub struct FnDecl {
     pub ext: Option<String>,
 }
 
-/// A generic type of lifetime that may be bounded.
-///
-/// A generic type `T`, lifetime `'a` or their bounded version `T: Display`, `'a: 'b + 'c`.
-#[derive(Clone, Debug)]
-pub struct Generic {
-    /// The identifier of the generic.
-    pub ident: String,
-    /// The bounds constraining the generic.
-    pub bounds: Option<Vec<String>>,
-}
-
-/// A variable.
-///
-/// A variable has an identifier and a type, for instance `var: String`.
-#[derive(Clone, Debug)]
-pub struct Variable {
-    /// The identifier of the variable.
-    pub ident: String,
-    /// The type of the variable.
-    pub ty: String,
-}
-
-/// A `where` clause of a generic definition.
-///
-/// Generic types and lifetimes can be constrained in a `where` clause.
-#[derive(Clone, Debug)]
-pub struct WhereClause {
-    /// The the constrained generic types of the function.
-    pub generics: Option<Vec<Generic>>,
-    /// The the constrained generic lifetimes of the function.
-    pub lifetimes: Option<Vec<Generic>>,
-}
-
-struct DocVisitor<'a> {
-    docs: &'a mut FileDoc,
-    codemap: &'a CodeMap,
-}
-
-impl<T> Doc<T> {
-    /// Creates a new `Doc` with the `doc_string` describing the `item`.
-    pub fn new(doc_string: String, item: T) -> Doc<T> {
-        Doc {
-            doc_string: doc_string,
-            item: item,
-        }
-    }
-}
-
-impl<T> fmt::Display for Doc<T>
-    where T: fmt::Display
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for line in self.doc_string.lines() {
-            try!(writeln!(f, "/// {}", line));
-        }
-        write!(f, "{}", self.item)
-    }
-}
-
-impl FileDoc {
-    /// Creates a new empty `FileDoc`.
-    pub fn new() -> FileDoc {
-        FileDoc {
-            enums: Vec::new(),
-            functions: Vec::new(),
-            structs: Vec::new(),
-            path: PathBuf::new(),
-        }
-    }
-
-    /// Creates a new `FileDoc` with the given `Path`.
-    pub fn with_path(path: &Path) -> FileDoc {
-        FileDoc {
-            enums: Vec::new(),
-            functions: Vec::new(),
-            structs: Vec::new(),
-            path: path.to_path_buf(),
-        }
-    }
-
-    /// Returns the `Path` of the file.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Extracts documentation from the [`path()`].
-    ///
-    /// [`path()`]: #method.path
-    pub fn extract_from_file(&mut self) {
-        let session = parse::ParseSess::new();
-        let krate = match parse::parse_crate_from_file(self.path(), Vec::new(), &session) {
-            Ok(krate) => krate,
-            Err(_) => return,
-        };
-        let mut visitor = DocVisitor {
-            docs: self,
-            codemap: session.codemap(),
-        };
-        visit::walk_crate(&mut visitor, &krate);
-    }
-}
-
-impl Default for FileDoc {
-    fn default() -> FileDoc {
-        FileDoc::new()
-    }
-}
-
-impl fmt::Display for Struct {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let generics = generic_string(&self.generics, &self.lifetimes);
-        let semicolon = match self.fields {
-            FieldVariant::Struct(_) => "".to_string(),
-            _ => ";".to_string(),
-        };
-        write!(f,
-               "pub struct {ident}{generics}{fields}{semicolon}",
-               ident = self.ident,
-               generics = generics,
-               fields = self.fields,
-               semicolon = semicolon)
-    }
-}
-
 impl fmt::Display for FnDecl {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let generics = generic_string(&self.generics, &self.lifetimes);
@@ -365,6 +296,17 @@ impl fmt::Display for FnDecl {
                    .map_or("".to_string(), |clause| format!("\n    {}", clause)),
                output = self.output.as_ref().map_or("".to_string(), |out| format!(" -> {}", out)))
     }
+}
+
+/// A generic type of lifetime that may be bounded.
+///
+/// A generic type `T`, lifetime `'a` or their bounded version `T: Display`, `'a: 'b + 'c`.
+#[derive(Clone, Debug)]
+pub struct Generic {
+    /// The identifier of the generic.
+    pub ident: String,
+    /// The bounds constraining the generic.
+    pub bounds: Option<Vec<String>>,
 }
 
 impl Generic {
@@ -408,6 +350,48 @@ impl fmt::Display for Generic {
     }
 }
 
+/// A public struct declaration.
+///
+/// Only public fields are included becuase private fields are not exposed to the documentation.
+#[derive(Clone, Debug)]
+pub struct Struct {
+    /// The identifier of the struct.
+    pub ident: String,
+    /// The public fields of the struct.
+    pub fields: FieldVariant,
+    /// The generic types of the struct.
+    pub generics: Option<Vec<Generic>>,
+    /// The generic lifetimes of the struct.
+    pub lifetimes: Option<Vec<Generic>>,
+}
+
+impl fmt::Display for Struct {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let generics = generic_string(&self.generics, &self.lifetimes);
+        let semicolon = match self.fields {
+            FieldVariant::Struct(_) => "".to_string(),
+            _ => ";".to_string(),
+        };
+        write!(f,
+               "pub struct {ident}{generics}{fields}{semicolon}",
+               ident = self.ident,
+               generics = generics,
+               fields = self.fields,
+               semicolon = semicolon)
+    }
+}
+
+/// A variable.
+///
+/// A variable has an identifier and a type, for instance `var: String`.
+#[derive(Clone, Debug)]
+pub struct Variable {
+    /// The identifier of the variable.
+    pub ident: String,
+    /// The type of the variable.
+    pub ty: String,
+}
+
 impl Variable {
     /// Creates a new `Variable` with its type.
     pub fn new(ident: String, ty: String) -> Variable {
@@ -422,6 +406,17 @@ impl fmt::Display for Variable {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}: {}", self.ident, self.ty)
     }
+}
+
+/// A `where` clause of a generic definition.
+///
+/// Generic types and lifetimes can be constrained in a `where` clause.
+#[derive(Clone, Debug)]
+pub struct WhereClause {
+    /// The the constrained generic types of the function.
+    pub generics: Option<Vec<Generic>>,
+    /// The the constrained generic lifetimes of the function.
+    pub lifetimes: Option<Vec<Generic>>,
 }
 
 impl From<Vec<Bound>> for WhereClause {
@@ -458,6 +453,11 @@ impl fmt::Display for WhereClause {
                join_generics_and_lifetimes(&self.generics.as_ref().unwrap_or(&Vec::new()),
                                            &self.lifetimes.as_ref().unwrap_or(&Vec::new())))
     }
+}
+
+struct DocVisitor<'a> {
+    docs: &'a mut FileDoc,
+    codemap: &'a CodeMap,
 }
 
 impl<'a> DocVisitor<'a> {
