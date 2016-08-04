@@ -160,6 +160,21 @@ impl FileDoc {
         }
     }
 
+    /// Adds a `Doc<Enum>` to the enum documentations.
+    pub fn add_enum(&mut self, enum_doc: Doc<Enum>) {
+        self.enums.push(enum_doc);
+    }
+
+    /// Adds a `Doc<FnDecl>` to the function documentations.
+    pub fn add_function(&mut self, fn_doc: Doc<FnDecl>) {
+        self.functions.push(fn_doc);
+    }
+
+    /// Adds a `Doc<Struct>` to the struct documentations.
+    pub fn add_struct(&mut self, struct_doc: Doc<Struct>) {
+        self.structs.push(struct_doc);
+    }
+
     /// Returns the `Path` of the file.
     pub fn path(&self) -> &Path {
         &self.path
@@ -504,7 +519,7 @@ impl<'a> DocVisitor<'a> {
                     lifetimes: lifetimes,
                     where_clause: where_clause,
                 };
-                self.docs.enums.push(Doc::with_docs(enum_def, doc));
+                self.docs.add_enum(Doc::with_docs(enum_def, doc));
             }
             ItemKind::Fn(ref fn_decl, ref unsafety, _, ref abi, ref generics, _) => {
                 let args = try!(convert_args(&fn_decl.inputs, self.codemap));
@@ -541,7 +556,7 @@ impl<'a> DocVisitor<'a> {
                     unsafety: unsafety,
                     ext: ext,
                 };
-                self.docs.functions.push(Doc::with_docs(function, doc));
+                self.docs.add_function(Doc::with_docs(function, doc));
             }
             ItemKind::Struct(ref data, ref generics) => {
                 let fields =
@@ -554,7 +569,7 @@ impl<'a> DocVisitor<'a> {
                     generics: gens,
                     lifetimes: lifetimes,
                 };
-                self.docs.structs.push(Doc::with_docs(st, doc));
+                self.docs.add_struct(Doc::with_docs(st, doc));
             }
             _ => println!("Not supported"),
         }
