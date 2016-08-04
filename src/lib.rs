@@ -86,6 +86,9 @@ pub fn generate_index(pattern: &str) {
         for st in doc.structs {
             println!("{}", st);
         }
+        for en in doc.enums {
+            println!("{}", en);
+        }
     }
 }
 

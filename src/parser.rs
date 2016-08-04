@@ -64,6 +64,23 @@ impl fmt::Display for FieldVariant {
     }
 }
 
+/// Default visibility
+#[derive(Clone, Debug)]
+pub enum DefaultVisibility {
+    Private,
+    Public,
+}
+
+impl From<bool> for DefaultVisibility {
+    fn from(visible: bool) -> DefaultVisibility {
+        if visible {
+            DefaultVisibility::Public
+        } else {
+            DefaultVisibility::Private
+        }
+    }
+}
+
 /// A documentation entry.
 #[derive(Clone, Debug)]
 pub struct Doc<T> {
@@ -79,11 +96,65 @@ pub struct Doc<T> {
 /// types. This makes it easier to search for a specific item.
 #[derive(Clone, Debug)]
 pub struct FileDoc {
+    /// The enum documentations.
+    pub enums: Vec<Doc<Enum>>,
     /// The function documentations.
     pub functions: Vec<Doc<FnDecl>>,
     /// The struct documentations.
     pub structs: Vec<Doc<Struct>>,
     path: PathBuf,
+}
+
+/// A public enum declaration.
+///
+/// All fields are inherently public.
+#[derive(Clone, Debug)]
+pub struct Enum {
+    /// The identifier of the enum.
+    pub ident: String,
+    /// The fields of the enum.
+    pub fields: Vec<Doc<EnumField>>,
+    /// The generic types of the enum.
+    pub generics: Option<Vec<Generic>>,
+    /// The generic lifetimes of the enum.
+    pub lifetimes: Option<Vec<Generic>>,
+    /// The `where` clause constraining the generic types and lifetimes of the enum.
+    pub where_clause: Option<WhereClause>,
+}
+
+impl fmt::Display for Enum {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let generics = generic_string(&self.generics, &self.lifetimes);
+        let where_clause = self.where_clause
+            .as_ref()
+            .map_or(" ".to_string(), |clause| format!("\n    {}\n", clause));
+        let fields = self.fields
+            .iter()
+            .map(|field| format!("    {},", field.to_string().replace("\n", "\n    ")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        write!(f,
+               "pub enum {ident}{generics}{where_clause}{{\n{fields}\n}}",
+               ident = self.ident,
+               generics = generics,
+               where_clause = where_clause,
+               fields = fields)
+    }
+}
+
+/// A field of an enum
+#[derive(Clone, Debug)]
+pub struct EnumField {
+    /// The identifier of the field.
+    pub ident: String,
+    /// The body of the field.
+    pub body: FieldVariant,
+}
+
+impl fmt::Display for EnumField {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}{}", self.ident, self.body)
+    }
 }
 
 /// A public struct declaration.
@@ -212,6 +283,7 @@ impl FileDoc {
     /// Creates a new empty `FileDoc`.
     pub fn new() -> FileDoc {
         FileDoc {
+            enums: Vec::new(),
             functions: Vec::new(),
             structs: Vec::new(),
             path: PathBuf::new(),
@@ -221,6 +293,7 @@ impl FileDoc {
     /// Creates a new `FileDoc` with the given `Path`.
     pub fn with_path(path: &Path) -> FileDoc {
         FileDoc {
+            enums: Vec::new(),
             functions: Vec::new(),
             structs: Vec::new(),
             path: path.to_path_buf(),
@@ -273,13 +346,7 @@ impl fmt::Display for Struct {
 
 impl fmt::Display for FnDecl {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let generics = if self.generics.is_none() && self.lifetimes.is_none() {
-            "".to_string()
-        } else {
-            format!("<{}>",
-                    join_generics_and_lifetimes(&self.generics.as_ref().unwrap_or(&Vec::new()),
-                                                &self.lifetimes.as_ref().unwrap_or(&Vec::new())))
-        };
+        let generics = generic_string(&self.generics, &self.lifetimes);
         write!(f,
                "pub {unsafety}{ext}fn {ident}{generics}({args}){output}{where_clause}",
                unsafety = if self.unsafety {
@@ -396,6 +463,36 @@ impl fmt::Display for WhereClause {
 impl<'a> DocVisitor<'a> {
     fn add_item(&mut self, ident: String, doc: String, item: &ItemKind) -> Result<(), Error> {
         match *item {
+            ItemKind::Enum(ref enum_def, ref generics) => {
+                let fields: Vec<_> = try!(enum_def.variants
+                    .iter()
+                    .map(|variant| {
+                        let ident = variant.node.name.to_string();
+                        let doc_string = try!(convert_doc_string(&variant.node.attrs,
+                                                                 self.codemap));
+                        let body = try!(convert_variantdata(&variant.node.data,
+                                                            self.codemap,
+                                                            &DefaultVisibility::Public));
+                        let enum_field = EnumField {
+                            ident: ident,
+                            body: body,
+                        };
+                        Ok(Doc::new(doc_string, enum_field))
+                    })
+                    .collect::<Result<_, Error>>());
+                let lifetimes = convert_lifetimes(&generics.lifetimes);
+                let gens = try!(convert_generics(&generics.ty_params, self.codemap));
+                let where_clause =
+                    try!(convert_where_predicates(&generics.where_clause.predicates, self.codemap));
+                let enum_def = Enum {
+                    ident: ident,
+                    fields: fields,
+                    generics: gens,
+                    lifetimes: lifetimes,
+                    where_clause: where_clause,
+                };
+                self.docs.enums.push(Doc::new(doc, enum_def));
+            }
             ItemKind::Fn(ref fn_decl, ref unsafety, _, ref abi, ref generics, _) => {
                 let args = try!(convert_args(&fn_decl.inputs, self.codemap));
                 let output = match fn_decl.output {
@@ -434,7 +531,8 @@ impl<'a> DocVisitor<'a> {
                 self.docs.functions.push(Doc::new(doc, function));
             }
             ItemKind::Struct(ref data, ref generics) => {
-                let fields = try!(convert_variantdata(data, self.codemap));
+                let fields =
+                    try!(convert_variantdata(data, self.codemap, &DefaultVisibility::Private));
                 let gens = try!(convert_generics(&generics.ty_params, self.codemap));
                 let lifetimes = convert_lifetimes(&generics.lifetimes);
                 let st = Struct {
@@ -498,7 +596,10 @@ fn convert_doc_string(attrs: &[ast::Attribute], codemap: &CodeMap) -> Result<Str
     Ok(res.join("\n"))
 }
 
-fn convert_variantdata(data: &ast::VariantData, codemap: &CodeMap) -> Result<FieldVariant, Error> {
+fn convert_variantdata(data: &ast::VariantData,
+                       codemap: &CodeMap,
+                       default_vis: &DefaultVisibility)
+                       -> Result<FieldVariant, Error> {
     match *data {
         ast::VariantData::Unit(_) => Ok(FieldVariant::Unit),
         ast::VariantData::Tuple(ref fields, _) => {
@@ -507,7 +608,7 @@ fn convert_variantdata(data: &ast::VariantData, codemap: &CodeMap) -> Result<Fie
             } else {
                 let members: Vec<_> = try!(fields.iter()
                     .map(|field| {
-                        if field.vis != ast::Visibility::Public {
+                        if !is_field_visible(&field.vis, &default_vis) {
                             return Ok(None);
                         }
                         let snippet = try!(codemap.span_to_snippet(field.ty.span));
@@ -524,7 +625,7 @@ fn convert_variantdata(data: &ast::VariantData, codemap: &CodeMap) -> Result<Fie
             } else {
                 let members: Vec<_> = try!(fields.iter()
                     .map(|field| {
-                        if field.vis != ast::Visibility::Public {
+                        if !is_field_visible(&field.vis, &default_vis) {
                             return Ok(None);
                         }
                         let ident = match field.ident {
@@ -630,6 +731,14 @@ fn generic_string(generics: &Option<Vec<Generic>>, lifetimes: &Option<Vec<Generi
         format!("<{}>",
                 join_generics_and_lifetimes(&generics.as_ref().unwrap_or(&Vec::new()),
                                             &lifetimes.as_ref().unwrap_or(&Vec::new())))
+    }
+}
+
+fn is_field_visible(vis: &ast::Visibility, default_vis: &DefaultVisibility) -> bool {
+    match (vis, default_vis) {
+        (&ast::Visibility::Public, _) |
+        (&ast::Visibility::Inherited, &DefaultVisibility::Public) => true,
+        _ => false,
     }
 }
 
